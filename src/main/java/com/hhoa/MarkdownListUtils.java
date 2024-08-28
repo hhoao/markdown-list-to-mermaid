@@ -1,5 +1,7 @@
 package com.hhoa;
 
+import com.sun.org.apache.bcel.internal.classfile.Code;
+
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
@@ -24,11 +26,16 @@ public class MarkdownListUtils {
         List<Node> subNodes = node.subNodes;
         if (!subNodes.isEmpty()) {
             int id = node.id;
+            String subGraphName = null;
+            if (subNodes.size() > 1) {
+                subGraphName = "SG" + ++subGraphId;
+            }
             if (id != -1) {
-                appendGraphLink(mermaid, id, subNodes.get(0).id);
+                appendGraphLink(mermaid, id,
+                    subGraphName == null ? String.valueOf(subNodes.get(0).id) : subGraphName);
             }
             if (subNodes.size() > 1) {
-                appendSubGraphHeader(mermaid);
+                appendSubGraphHeader(mermaid, subGraphName, node.code);
             }
             for (int i = 0; i < subNodes.size(); i++) {
                 Node subNode = subNodes.get(i);
@@ -50,7 +57,9 @@ public class MarkdownListUtils {
         int space = 0;
         ArrayDeque<Node> nodeRoute = new ArrayDeque<>();
         StringBuilder currentContent = new StringBuilder();
-        boolean bold = false, code = false, indent = true, escape = false;
+        boolean bold = false, code = false, indent = true, escape = false, nodeStart = false, catchCode = true;
+        int codeStart = 0;
+        String currentCode = null;
         for (int i = 0; i < markdown.length(); i++) {
             char c = markdown.charAt(i);
             if (c == ' ') {
@@ -58,46 +67,56 @@ public class MarkdownListUtils {
                     space++;
                     continue;
                 }
-            } else if (indent) {
-                if (i < markdown.length() - 1 && markdown.charAt(i) != '\n') {
-                    currentContent.append("\n");
-                    indent = false;
-                }
             }
 
-            if (c == '*') {
-                if (i < markdown.length() - 1 && (markdown.charAt(i+1)) == ' ') {
-                    i++;
-                    Node node = new Node(space);
-                    if (!nodeRoute.isEmpty()) {
-                        Node peek = nodeRoute.peek();
-                        peek.content = currentContent.toString();
-                    }
-                    while (!nodeRoute.isEmpty()) {
-                        Node peek = nodeRoute.peek();
-                        if (peek.space == node.space) {
-                            if (peek.parent != null) {
-                                node.parent = peek.parent;
-                                peek.parent.subNodes.add(node);
-                            }
-                            nodeRoute.pop();
-                            break;
-                        } else if (peek.space < node.space) {
-                            node.parent = peek;
-                            peek.subNodes.add(node);
-                            break;
-                        } else {
-                            nodeRoute.pop();
+            if (c == '*' && i < markdown.length() - 1 && (markdown.charAt(i + 1)) == ' ') {
+                catchCode = true;
+                nodeStart = true;
+                i++;
+                Node node = new Node(space);
+                if (!nodeRoute.isEmpty()) {
+                    Node peek = nodeRoute.peek();
+                    peek.content = currentContent.toString();
+                    peek.code = currentCode;
+                }
+                currentCode = null;
+                while (!nodeRoute.isEmpty()) {
+                    Node peek = nodeRoute.peek();
+                    if (peek.space == node.space) {
+                        if (peek.parent != null) {
+                            node.parent = peek.parent;
+                            peek.parent.subNodes.add(node);
                         }
-                    }
-                    if (nodeRoute.isEmpty()) {
-                        rootNodes.add(node);
-                        nodeRoute.push(node);
+                        nodeRoute.pop();
+                        break;
+                    } else if (peek.space < node.space) {
+                        node.parent = peek;
+                        peek.subNodes.add(node);
+                        break;
                     } else {
-                        nodeRoute.push(node);
+                        nodeRoute.pop();
                     }
-                    currentContent = new StringBuilder();
-                } else if (i < markdown.length() - 1 && (markdown.charAt(i+1)) == '*') {
+                }
+                if (nodeRoute.isEmpty()) {
+                    rootNodes.add(node);
+                    nodeRoute.push(node);
+                } else {
+                    nodeRoute.push(node);
+                }
+                currentContent = new StringBuilder();
+            } else {
+                if (indent) {
+                    if (c == '\n') {
+                        space = 0;
+                        continue;
+                    }
+                    if (!nodeStart) {
+                        currentContent.append("\n");
+                    }
+                    indent = false;
+                    nodeStart = false;
+                }
+                if (c == '*' && i < markdown.length() - 1 && (markdown.charAt(i + 1)) == '*') {
                     i++;
                     if (bold) {
                         currentContent.append("</b>");
@@ -105,30 +124,42 @@ public class MarkdownListUtils {
                         currentContent.append("<b>");
                     }
                     bold = !bold;
-                }
-            } else if (c == '\\') {
-                escape = true;
-            } else if (c == '`') {
-                if (code) {
-                    currentContent.append("</code>");
+                } else if (c == '\\') {
+                    escape = true;
+                } else if (c == '`') {
+                    if (indent) {
+                        currentContent.append("\n");
+                        indent = false;
+                    }
+                    if (code) {
+                        if (catchCode) {
+                            currentCode = currentContent.substring(codeStart, currentContent.length());
+                            catchCode = false;
+                        }
+                        currentContent.append("</code>");
+                    } else {
+                        currentContent.append("<code>");
+                        if (catchCode) {
+                            codeStart = currentContent.length();
+                        }
+                    }
+                    code = !code;
+                } else if (c == '\n') {
+                    space = 0;
+                    indent = true;
                 } else {
-                    currentContent.append("<code>");
+                    currentContent.append(c);
                 }
-                code = !code;
-            } else if (c == '\n') {
-                space = 0;
-                indent = true;
-            } else {
-                currentContent.append(c);
             }
         }
         if (!nodeRoute.isEmpty()) {
             Node pop = nodeRoute.pop();
             pop.content = currentContent.toString();
+            pop.code = currentCode;
         }
     }
 
-    private void appendGraphLink(StringBuilder mermaid, int parentId, int childId) {
+    private void appendGraphLink(StringBuilder mermaid, int parentId, String childId) {
         mermaid
             .append("\n")
             .append(parentId)
@@ -168,12 +199,18 @@ public class MarkdownListUtils {
             .append("\n");
     }
 
-    private void appendSubGraphHeader(StringBuilder mermaid) {
+    private void appendSubGraphHeader(StringBuilder mermaid, String subGraphName, String title) {
         mermaid
-            .append("subgraph " + "SG")
-            .append(subGraphId++)
-            .append(" [\" \"]")
+            .append("subgraph ")
+            .append(subGraphName)
+            .append(" [\" ");
+        if (title != null) {
+            mermaid.append(title);
+        }
+
+        mermaid.append(" \"]")
             .append("\n");
+        mermaid.append("direction LR\n");
     }
 
     static class Node {
@@ -181,6 +218,7 @@ public class MarkdownListUtils {
         int id;
         Node parent;
         List<Node> subNodes = new ArrayList<>();
+        String code = null;
         int space;
         String content = "";
 
